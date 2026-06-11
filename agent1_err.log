@@ -1,0 +1,5 @@
+time="2026-06-11T19:55:22+03:00" level=warning msg="تم توليد مفاتيح مؤقتة — استخدم -init لإنشاء keystore دائم"
+time="2026-06-11T19:55:22+03:00" level=info msg="عقدة NeuroRoot جاهزة" acp="[ping echo translate task.execute]" addrs="[/ip4/127.0.0.1/tcp/4002/p2p/12D3KooWLttmAho8MxGv2mWEgB9Fj4ULby7FGcH8PF8EYYBFQxv3 /ip4/192.168.1.4/tcp/4002/p2p/12D3KooWLttmAho8MxGv2mWEgB9Fj4ULby7FGcH8PF8EYYBFQxv3]" did="did:ia:QysLqvbC4kfgbXbHwuvbxX" peer=12D3KooWLttmAho8MxGv2mWEgB9Fj4ULby7FGcH8PF8EYYBFQxv3
+time="2026-06-11T19:55:22+03:00" level=info msg="REST API token (محلي فقط)" token=nr-1781196922801066000
+time="2026-06-11T19:55:22+03:00" level=info msg="بدء REST API" addr="127.0.0.1:8080"
+time="2026-06-11T19:55:29+03:00" level=info msg="بدء الاستماع للقناة: main-lobby"

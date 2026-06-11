@@ -58,6 +58,8 @@ type Node struct {
 	chunkAsm     *ChunkAssembler
 	acpRouter    *acp.Router
 	acpTransport *acp.Transport
+	topics       map[string]*pubsub.Topic
+	topicsMu     sync.RWMutex
 	cancel       context.CancelFunc
 }
 
@@ -71,7 +73,10 @@ func New(ctx context.Context, cfg *Config, kp *nrcrypto.KeyPair, idRec *identity
 	}
 
 	// BadgerDB
-	db, err := badger.Open(badger.DefaultOptions(cfg.DataDir + "/badger").WithLogger(nil))
+	opts := badger.DefaultOptions(cfg.DataDir + "/badger").
+		WithLogger(nil).
+		WithValueLogFileSize(16 * 1024 * 1024) // 16MB instead of 1GB to support low disk space
+	db, err := badger.Open(opts)
 	if err != nil {
 		return nil, fmt.Errorf("فشل فتح BadgerDB: %w", err)
 	}
@@ -177,6 +182,7 @@ func New(ctx context.Context, cfg *Config, kp *nrcrypto.KeyPair, idRec *identity
 		founderPub:  founderPub,
 		keyCache:    make(map[string]ed25519.PublicKey),
 		chunkAsm:    NewChunkAssembler(),
+		topics:      make(map[string]*pubsub.Topic),
 		cancel:      cancel,
 	}
 
@@ -271,18 +277,28 @@ func (n *Node) ResolveDomain(ctx context.Context, name string) (*naming.DomainRe
 
 // JoinChannel ينضم لقناة عامة
 func (n *Node) JoinChannel(ctx context.Context, channelID string) (*pubsub.Topic, *pubsub.Subscription, error) {
+	n.topicsMu.Lock()
+	defer n.topicsMu.Unlock()
+
 	validator := channel.NewChannelMessageValidator(n, n.log)
 	topicName := channel.TopicName(channelID)
 
-	topic, err := n.ps.Join(topicName)
-	if err != nil {
-		return nil, nil, err
-	}
+	var topic *pubsub.Topic
+	var err error
+	if existing, ok := n.topics[topicName]; ok {
+		topic = existing
+	} else {
+		topic, err = n.ps.Join(topicName)
+		if err != nil {
+			return nil, nil, err
+		}
+		n.topics[topicName] = topic
 
-	// تسجيل validator
-	n.ps.RegisterTopicValidator(topicName, func(ctx context.Context, peerID peer.ID, msg *pubsub.Message) pubsub.ValidationResult {
-		return validator.Validate(channelID, msg.Data)
-	})
+		// تسجيل validator
+		n.ps.RegisterTopicValidator(topicName, func(ctx context.Context, peerID peer.ID, msg *pubsub.Message) pubsub.ValidationResult {
+			return validator.Validate(channelID, msg.Data)
+		})
+	}
 
 	sub, err := topic.Subscribe()
 	if err != nil {
@@ -293,11 +309,21 @@ func (n *Node) JoinChannel(ctx context.Context, channelID string) (*pubsub.Topic
 
 // PublishChannelMessage ينشر رسالة في قناة
 func (n *Node) PublishChannelMessage(ctx context.Context, channelID, content string) error {
+	n.topicsMu.Lock()
 	topicName := channel.TopicName(channelID)
-	topic, err := n.ps.Join(topicName)
-	if err != nil {
-		return err
+	var topic *pubsub.Topic
+	var err error
+	if existing, ok := n.topics[topicName]; ok {
+		topic = existing
+	} else {
+		topic, err = n.ps.Join(topicName)
+		if err != nil {
+			n.topicsMu.Unlock()
+			return err
+		}
+		n.topics[topicName] = topic
 	}
+	n.topicsMu.Unlock()
 
 	msg, err := channel.NewChannelMessage(n.keyPair.DID, content, channelID, n.keyPair.Private)
 	if err != nil {

@@ -54,6 +54,7 @@ func NewServer(n *node.Node, port int, log *logrus.Logger) *Server {
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/dashboard", s.handleDashboard)
 	mux.HandleFunc("/dashboard/", s.handleDashboard)
+	mux.HandleFunc("/", s.handleRoot)
 
 	s.server = &http.Server{
 		Addr:              fmt.Sprintf("127.0.0.1:%d", port),
@@ -94,7 +95,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/health" || strings.HasPrefix(r.URL.Path, "/dashboard") {
+		if r.URL.Path == "/" || r.URL.Path == "/api/health" || strings.HasPrefix(r.URL.Path, "/dashboard") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -434,4 +435,16 @@ func (s *Server) handleChannelsMessages(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(DashboardHTML))
+}
+
+func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	url := "/dashboard"
+	if r.URL.RawQuery != "" {
+		url += "?" + r.URL.RawQuery
+	}
+	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
