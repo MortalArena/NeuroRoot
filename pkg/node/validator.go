@@ -1,0 +1,190 @@
+package node
+
+import (
+	"crypto/ed25519"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/neuroroot/core/pkg/identity"
+	"github.com/neuroroot/core/pkg/naming"
+	dht "github.com/libp2p/go-libp2p-kad-dht"
+	"github.com/libp2p/go-libp2p/core/peer"
+)
+
+// DHTValidators يوفّر validators لسجلات DHT
+type DHTValidators struct {
+	founderPub ed25519.PublicKey
+	crl        *identity.CRLCache
+}
+
+// NewDHTValidators ينشئ validators
+func NewDHTValidators(founderPub ed25519.PublicKey, crl *identity.CRLCache) *DHTValidators {
+	return &DHTValidators{
+		founderPub: founderPub,
+		crl:        crl,
+	}
+}
+
+// ValidatorOption يرجع خيار validator لـ kad-dht
+func (v *DHTValidators) ValidatorOption() dht.Option {
+	return dht.NamespacedValidator("nr", v)
+}
+
+// Validate يتحقق من قيمة DHT
+func (v *DHTValidators) Validate(key string, value []byte) error {
+	switch {
+	case strings.HasPrefix(key, "/nr/identity/"):
+		return v.validateIdentity(value)
+	case strings.HasPrefix(key, "/nr/domain/"):
+		return v.validateDomain(value)
+	case strings.HasPrefix(key, "/nr/domain-commit/"):
+		return v.validateDomainCommit(value)
+	case strings.HasPrefix(key, "/nr/revoke/"):
+		return v.validateRevocation(value)
+	case strings.HasPrefix(key, "/nr/delegation/"):
+		return v.validateDelegation(value)
+	case strings.HasPrefix(key, "/nr/search/"):
+		return v.validateSearch(value)
+	case strings.HasPrefix(key, "/nr/prov/"):
+		return nil // provider records — تحقق خفيف
+	default:
+		return fmt.Errorf("مفتاح DHT غير معروف: %s", key)
+	}
+}
+
+// Select يختار أفضل قيمة (أعلى Sequence/Version)
+func (v *DHTValidators) Select(key string, values [][]byte) (int, error) {
+	switch {
+	case strings.HasPrefix(key, "/nr/identity/"):
+		return selectHighestSequence(values)
+	case strings.HasPrefix(key, "/nr/domain/"):
+		return selectHighestDomainVersion(values)
+	default:
+		if len(values) == 0 {
+			return -1, fmt.Errorf("لا توجد قيم")
+		}
+		return 0, nil
+	}
+}
+
+func (v *DHTValidators) validateIdentity(data []byte) error {
+	var rec identity.IdentityRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return err
+	}
+	if v.crl != nil && v.crl.IsRevoked(rec.DID) {
+		return fmt.Errorf("الهوية ملغاة")
+	}
+	return rec.Verify()
+}
+
+func (v *DHTValidators) validateDomainCommit(data []byte) error {
+	_, err := naming.UnmarshalCommitRecord(data)
+	return err
+}
+
+func (v *DHTValidators) validateDomain(data []byte) error {
+	var rec naming.DomainRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return err
+	}
+	if _, err := naming.NormalizeDomainName(rec.Name); err != nil {
+		return err
+	}
+	if rec.FounderSig == "" {
+		return fmt.Errorf("توقيع المؤسس مطلوب")
+	}
+	// على مستوى DHT نتحقق من توقيع المؤسس؛ OwnerSig يُتحقق عند الحل الكامل
+	return rec.VerifyFounderSig(v.founderPub)
+}
+
+func (v *DHTValidators) validateRevocation(data []byte) error {
+	var rec identity.RevocationRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return err
+	}
+	// التحقق الكامل يحتاج المفتاح العام — نتحقق من البنية
+	if rec.DID == "" || rec.Signature == "" {
+		return fmt.Errorf("سجل إلغاء غير صالح")
+	}
+	return nil
+}
+
+func (v *DHTValidators) validateDelegation(data []byte) error {
+	var rec identity.DelegationRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return err
+	}
+	if rec.Owner == "" || rec.Delegate == "" || rec.Signature == "" {
+		return fmt.Errorf("سجل تفويض غير صالح")
+	}
+	return nil
+}
+
+func (v *DHTValidators) validateSearch(data []byte) error {
+	// تحقق أساسي من البنية
+	var entry struct {
+		DID     string `json:"did"`
+		PeerID  string `json:"peer_id"`
+		Keyword string `json:"keyword"`
+		Sig     string `json:"sig"`
+	}
+	if err := json.Unmarshal(data, &entry); err != nil {
+		return err
+	}
+	if entry.DID == "" || entry.Sig == "" {
+		return fmt.Errorf("إعلان بحث غير صالح")
+	}
+	_, err := peer.Decode(entry.PeerID)
+	return err
+}
+
+func selectHighestSequence(values [][]byte) (int, error) {
+	bestIdx := -1
+	var bestSeq uint64
+	for i, val := range values {
+		var rec identity.IdentityRecord
+		if err := json.Unmarshal(val, &rec); err != nil {
+			continue
+		}
+		if bestIdx < 0 || rec.Sequence > bestSeq {
+			bestIdx = i
+			bestSeq = rec.Sequence
+		}
+	}
+	if bestIdx < 0 {
+		return -1, fmt.Errorf("لا توجد سجلات صالحة")
+	}
+	return bestIdx, nil
+}
+
+func selectHighestDomainVersion(values [][]byte) (int, error) {
+	bestIdx := -1
+	var bestVer uint64
+	var bestOwner string
+	for i, val := range values {
+		var rec naming.DomainRecord
+		if err := json.Unmarshal(val, &rec); err != nil {
+			continue
+		}
+		// أعلى Version مع نفس Owner
+		if bestIdx < 0 {
+			bestIdx = i
+			bestVer = rec.Version
+			bestOwner = rec.Owner
+			continue
+		}
+		if rec.Owner != bestOwner {
+			continue // رفض تغيير Owner بدون نقل ملكية موثّق
+		}
+		if rec.Version > bestVer {
+			bestIdx = i
+			bestVer = rec.Version
+		}
+	}
+	if bestIdx < 0 {
+		return -1, fmt.Errorf("لا توجد سجلات صالحة")
+	}
+	return bestIdx, nil
+}

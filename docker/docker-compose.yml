@@ -1,0 +1,35 @@
+version: "3.8"
+
+services:
+  seed:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "4001:4001"
+    volumes:
+      - seed-data:/data
+    command: ["-port", "4001", "-data", "/data"]
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    entrypoint: ["agent"]
+    ports:
+      - "4002:4002"
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - agent-data:/data
+    environment:
+      - NR_REST_PORT=8080
+      - NR_FOUNDER_PUB=${NR_FOUNDER_PUB:-}
+    command: ["-port", "4002", "-data", "/data", "-rest", "8080", "-bootstrap", "/ip4/seed/tcp/4001/p2p/REPLACE_WITH_SEED_PEER_ID"]
+    depends_on:
+      - seed
+    restart: unless-stopped
+
+volumes:
+  seed-data:
+  agent-data:
